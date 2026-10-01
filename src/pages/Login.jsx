@@ -1,6 +1,5 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { USERS } from "../data/users";
 import { useAuth } from "../context/AuthContext";
 import logo from "../assets/emids-logo.png";
 
@@ -9,22 +8,30 @@ const FIELD =
 const LABEL = "mb-1.5 block mono-label text-[10px] text-warm/50";
 
 export default function Login() {
-  const { login } = useAuth();
+  const { login, users, usersReady } = useAuth();
   const navigate = useNavigate();
   const [role, setRole] = useState("employee");
-  const [userId, setUserId] = useState("u1");
+  const [userId, setUserId] = useState("");
 
-  const people = USERS.filter((u) => u.role === role);
+  const people = users.filter((u) => u.role === role);
+
+  // Keep the selected user valid as the API list loads / role flips
+  useEffect(() => {
+    if (!people.length) return;
+    if (!people.some((p) => p.id === userId)) setUserId(people[0].id);
+  }, [people, userId]);
 
   const pickRole = (r) => {
     setRole(r);
-    const first = USERS.find((u) => u.role === r);
-    setUserId(first.id);
+    const first = users.find((u) => u.role === r);
+    setUserId(first ? first.id : "");
   };
 
   const onSubmit = (ev) => {
     ev.preventDefault();
-    login(USERS.find((u) => u.id === userId));
+    const found = users.find((u) => u.id === userId);
+    if (!found) return;
+    login(found);
     navigate(role === "agent" ? "/inbox" : "/my-tickets");
   };
 
@@ -94,6 +101,7 @@ export default function Login() {
             onChange={(e) => setUserId(e.target.value)}
             className={`${FIELD} mb-8`}
           >
+            {people.length === 0 && <option value="">{usersReady ? "No users" : "Loading users…"}</option>}
             {people.map((p) => (
               <option key={p.id} value={p.id}>{p.name}</option>
             ))}
@@ -101,12 +109,13 @@ export default function Login() {
 
           <button
             type="submit"
-            className="mono-label w-full border border-teal bg-teal py-3.5 text-[10px] text-canvas transition-colors hover:bg-teal-light"
+            disabled={!userId}
+            className="mono-label w-full border border-teal bg-teal py-3.5 text-[10px] text-canvas transition-colors hover:bg-teal-light disabled:cursor-not-allowed disabled:opacity-40"
           >
             Continue ↘
           </button>
           <p className="mt-5 text-center text-caption text-warm/35">
-            Mock auth for demo purposes only.
+            Mock auth for demo purposes only — real users come from the backend.
           </p>
         </form>
       </section>

@@ -1,14 +1,31 @@
-// In-memory mock store with a pub/sub so views stay in sync.
-// Replace the bodies of these functions with API calls later —
-// the signatures are designed to map 1:1 onto REST endpoints.
-import { TICKETS } from "./tickets";
+// API-backed ticket store (replaces the in-memory mock).
+//
+// Same contract as before:
+//   - listTickets()/getTicket(id) stay SYNCHRONOUS reads of a local cache,
+//     so existing components keep working unchanged.
+//   - refreshTickets()/refreshTicket(id) pull fresh data from the API and
+//     notify subscribers; hooks.js calls these on mount.
+//   - every write goes to the API, merges the authoritative returned ticket
+//     into the cache (status bumps, auto pickup reply, closedBy… server-side),
+//     then notifies.
+import * as api from "../api/client";
 
-let tickets = [...TICKETS];
+let tickets = [];
 const listeners = new Set();
 
-const notify = () => listeners.forEach((fn) => fn(tickets));
+const notify = () => listeners.forEach((fn) => fn());
 const sortDesc = (list) =>
   [...list].sort((a, b) => Date.parse(b.updatedAt) - Date.parse(a.updatedAt));
+
+function upsert(saved) {
+  const i = tickets.findIndex((t) => t.id === saved.id);
+  if (i >= 0) {
+    tickets[i] = saved;
+  } else {
+    tickets.unshift(saved);
+  }
+  tickets = sortDesc(tickets);
+}
 
 export function subscribe(fn) {
   listeners.add(fn);
@@ -23,113 +40,49 @@ export function getTicket(id) {
   return tickets.find((t) => t.id === id) ?? null;
 }
 
-let nextSeq = 119;
-export function createTicket({ employeeId, category, subject, description, priority, attachment = null }) {
-  const nowISO = new Date().toISOString();
-  const ticket = {
-    id: `TKT-${nextSeq++}`,
-    employeeId,
-    category,
-    subject,
-    description,
-    priority,
-    status: "Open",
-    assigneeId: null,
-    createdAt: nowISO,
-    updatedAt: nowISO,
-    firstReplyAt: null,
-    resolvedAt: null,
-    closedBy: null,
-    turns: [],
-    attachment,
-  };
-  tickets = [ticket, ...tickets];
+async function updateCache(promise) {
+  const saved = await promise;
+  upsert(saved);
   notify();
-  return ticket;
+  return saved;
 }
 
-export function addReply(ticketId, { authorId, role, text }) {
-  const ticket = getTicket(ticketId);
-  if (!ticket) return;
-  const at = new Date().toISOString();
-  const turn = { authorId, role, text, at };
-  ticket.turns = [...ticket.turns, turn];
-  ticket.updatedAt = at;
-  if (role === "agent") {
-    if (!ticket.firstReplyAt) ticket.firstReplyAt = at;
-    if (ticket.employeeId && ticket.turns.at(-1)?.role === "agent") {
-      ticket.status = ticket.status === "Open" ? "In Progress" : ticket.status;
-    }
-  }
-  if (role === "employee" && !["Resolved", "Closed"].includes(ticket.status)) {
-    ticket.status = "Waiting on Employee";
-  }
-  notify();
-  return ticket;
-}
-
-export function updateStatus(ticketId, status, actorId) {
-  const ticket = getTicket(ticketId);
-  if (!ticket) return;
-  ticket.status = status;
-  if (status === "Resolved") ticket.resolvedAt = new Date().toISOString();
-  if (status === "Closed") {
-    ticket.resolvedAt = ticket.resolvedAt ?? new Date().toISOString();
-    ticket.closedBy = actorId;
-  }
-  if (["Open", "In Progress"].includes(status)) {
-    ticket.resolvedAt = null;
-    ticket.closedBy = null;
-  }
-  ticket.updatedAt = new Date().toISOString();
-  notify();
-  return ticket;
-}
-
-export function assignTicket(ticketId, assigneeId) {
-  const ticket = getTicket(ticketId);
-  if (!ticket) return;
-  ticket.assigneeId = assigneeId;
-  if (!assigneeId) {
-    ticket.assigneeId = null;
-    ticket.updatedAt = new Date().toISOString();
+// ---- cache refreshers -------------------------------------------------------
+export function refreshTickets() {
+  return api.listTickets().then((fresh) => {
+    tickets = sortDesc(fresh);
     notify();
-    return ticket;
-  }
-  const hasAgentTurn = ticket.turns.some((t) => t.role === "agent");
-  if (!ticket.firstReplyAt && !hasAgentTurn) {
-    const at = new Date().toISOString();
-    ticket.firstReplyAt = at;
-    ticket.turns = [
-      ...ticket.turns,
-      {
-        authorId: assigneeId,
-        role: "agent",
-        text: "Thanks for raising this — I've picked it up and will get back to you shortly.",
-        at,
-      },
-    ];
-    if (ticket.status === "Open") ticket.status = "In Progress";
-  }
-  ticket.updatedAt = new Date().toISOString();
-  notify();
-  return ticket;
+    return tickets;
+  });
 }
 
-export function setPriority(ticketId, priority) {
-  const ticket = getTicket(ticketId);
-  if (!ticket) return;
-  ticket.priority = priority;
-  ticket.updatedAt = new Date().toISOString();
-  notify();
-  return ticket;
+export function refreshTicket(id) {
+  return updateCache(api.getTicket(id));
 }
 
-export function setCategory(ticketId, category) {
-  const ticket = getTicket(ticketId);
-  if (!ticket) return;
-  ticket.category = category;
-  ticket.updatedAt = new Date().toISOString();
-  notify();
-  return ticket;
+// ---- writes -----------------------------------------------------------------
+export const createTicket = (payload) => updateCache(api.createTicket(payload));
+
+export const uploadAttachment = (ticketId, file) =>
+  updateCache(api.uploadAttachment(ticketId, file));
+
+// role is derived from authorId server-side; kept in the signature for compatibility
+export const addReply = (ticketId, { authorId, role, text }) =>
+  updateCache(api.addReply(ticketId, { authorId, text }));
+
+export const updateStatus = (ticketId, status, actorId) =>
+  updateCache(api.updateStatus(ticketId, { status, actorId }));
+
+export const assignTicket = (ticketId, assigneeId) =>
+  updateCache(api.assignTicket(ticketId, { assigneeId }));
+
+export const setPriority = (ticketId, priority) =>
+  updateCache(api.setPriority(ticketId, { priority }));
+
+export const setCategory = (ticketId, category) =>
+  updateCache(api.setCategory(ticketId, { category }));
+
+// ---- attachments ------------------------------------------------------------
+export function getAttachmentUrl(ticketId) {
+  return api.getAttachmentUrl(ticketId);
 }

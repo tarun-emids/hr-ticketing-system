@@ -1,10 +1,10 @@
 import { useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { CATEGORIES, PRIORITIES } from "../data/users";
-import { createTicket } from "../data/store";
+import { createTicket, uploadAttachment } from "../data/store";
 import { useAuth } from "../context/AuthContext";
 
-const MAX_FILE_BYTES = 5 * 1024 * 1024; // 5 MB demo cap
+const MAX_FILE_BYTES = 5 * 1024 * 1024; // 5 MB — same cap the backend enforces
 
 const FIELD =
   "w-full border bg-canvas px-3 py-2.5 text-body-lg text-warm placeholder:text-warm/30 focus:border-teal focus:outline-none";
@@ -48,24 +48,23 @@ export default function TicketForm() {
     setErrors(e);
     if (Object.keys(e).length > 0) return;
     setSubmitting(true);
-    const fileMeta = file ? { name: file.name, size: file.size } : null;
-    const created = await new Promise((resolve) =>
-      setTimeout(
-        () =>
-          resolve(
-            createTicket({
-              employeeId: user.id,
-              category,
-              subject: subject.trim(),
-              description: description.trim(),
-              priority,
-              attachment: fileMeta,
-            })
-          ),
-        500
-      )
-    );
-    navigate(`/tickets/${created.id}?created=1`);
+    try {
+      const saved = await createTicket({
+        employeeId: user.id,
+        category,
+        subject: subject.trim(),
+        description: description.trim(),
+        priority,
+      });
+      if (file) {
+        await uploadAttachment(saved.id, file);
+      }
+      navigate(`/tickets/${saved.id}?created=1`);
+    } catch (err) {
+      setErrors({ _form: err.message || "Could not submit the ticket — is the API running?" });
+    } finally {
+      setSubmitting(false);
+    }
   };
 
   const onPickFile = (ev) => {
@@ -173,6 +172,12 @@ export default function TicketForm() {
           {submitting ? "Submitting…" : "Submit ticket ↘"}
         </button>
       </div>
+
+      {errors._form && (
+        <div className="mt-4 border border-error/40 bg-error/10 px-4 py-3">
+          <FieldError msg={errors._form} />
+        </div>
+      )}
     </form>
   );
 }

@@ -1,9 +1,10 @@
-import { USERS } from "../data/users";
+import { useAuth } from "../context/AuthContext";
 import { useTickets } from "../hooks";
 import TicketTable from "../components/TicketTable";
 import { SkeletonList, EmptyState } from "../components/primitives";
 
 export default function HRInbox() {
+  const { users } = useAuth();
   const { tickets, loading } = useTickets();
 
   if (loading) {
@@ -35,7 +36,7 @@ export default function HRInbox() {
           icon="↘"
         />
       ) : (
-        <TicketTable tickets={tickets} users={USERS} />
+        <TicketTable tickets={tickets} users={users} />
       )}
     </div>
   );
